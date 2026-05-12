@@ -1,0 +1,141 @@
+name: Video Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: '🔗 YouTube video URL(s)'
+        required: true
+        type: string
+      quality:
+        description: '🎬 Video quality'
+        required: true
+        default: 'best'
+        type: choice
+        options:
+          - best
+          - 2160
+          - 1440
+          - 1080
+          - 720
+          - 480
+          - audio
+      parts_size:
+        description: '🫙 Parts size (MB)'
+        required: false
+        default: '45'
+        type: string
+      output_name:
+        description: '📝 Output file name (optional, without extension)'
+        required: false
+        type: string
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # -------------------------------
+      # Switch / create videos branch
+      # -------------------------------
+      - name: Prepare videos branch
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git fetch origin videos || true
+          if git show-ref --verify --quiet refs/remotes/origin/videos; then
+            git checkout -B videos origin/videos
+          else
+            git checkout --orphan videos
+            git rm -rf . || true
+            mkdir -p videos
+            git commit --allow-empty -m "[bot] initialize videos branch"
+            git push origin videos
+          fi
+
+          mkdir -p videos
+
+      # -------------------------------
+      # Install ffmpeg + yt-dlp
+      # -------------------------------
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip zip
+          pip install --upgrade yt-dlp
+
+      # -------------------------------
+      # Download video
+      # -------------------------------
+      - name: Download video
+        run: |
+          QUALITY="${{ inputs.quality }}"
+
+          if [ "$QUALITY" = "audio" ]; then
+            FORMAT="-f bestaudio --extract-audio --audio-format mp3"
+          elif [ "$QUALITY" = "best" ]; then
+            FORMAT="-f bestvideo+bestaudio/best --merge-output-format mp4"
+          else
+            FORMAT="-f bestvideo[height<=${QUALITY}]+bestaudio/best --merge-output-format mp4"
+          fi
+
+          OUTPUT_NAME="${{ inputs.output_name }}"
+          if [ -n "$OUTPUT_NAME" ]; then
+            OUTPUT="-o ${OUTPUT_NAME}.%(ext)s"
+          else
+            OUTPUT="-o %(title)s.%(ext)s"
+          fi
+
+          mkdir -p tmp
+          cd tmp
+
+          yt-dlp $FORMAT $OUTPUT "${{ inputs.youtube_url }}"
+
+          FILE=$(ls -1 | head -n 1)
+          SAFE_NAME=$(echo "$FILE" | tr ' ' '_')
+
+          echo "FILE=$FILE" >> $GITHUB_ENV
+          echo "SAFE_NAME=$SAFE_NAME" >> $GITHUB_ENV
+
+          zip -0 -s "${{ inputs.parts_size }}m" "../videos/${SAFE_NAME}.zip" "$FILE"
+
+      # -------------------------------
+      # Generate README
+      # -------------------------------
+      - name: Generate README
+        run: |
+          rm -f README.md
+          echo "# 📥 Download Links" > README.md
+          echo "" >> README.md
+          echo "Generated on: $(date -u)" >> README.md
+          echo "" >> README.md
+
+          for file in videos/*; do
+            if [ -f "$file" ]; then
+              name=$(basename "$file")
+              encoded=$(python3 - <<EOF
+import urllib.parse
+print(urllib.parse.quote("$name"))
+EOF
+)
+              url="https://raw.githubusercontent.com/${{ github.repository }}/videos/videos/$encoded"
+              echo "- [$name]($url)" >> README.md
+            fi
+          done
+
+      # -------------------------------
+      # Commit & push
+      # -------------------------------
+      - name: Commit and push
+        run: |
+          git add videos README.md
+          git commit -m "[bot] add video ${{ env.SAFE_NAME }}" || echo "Nothing to commit"
+          git push origin videos
