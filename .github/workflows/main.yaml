@@ -122,15 +122,24 @@ jobs:
             if [ -f "$file" ]; then
               name=$(basename "$file")
               encoded=$(python3 - <<EOF
-import urllib.parse
-print(urllib.parse.quote("$name"))
-EOF
-)
+      - name: Generate README
+        run: |
+          rm -f README.md
+          {
+            echo "# 📥 Download Links"
+            echo ""
+            echo "Generated on: $(date -u)"
+            echo ""
+          } > README.md
+
+          for file in videos/*; do
+            if [ -f "$file" ]; then
+              name=$(basename "$file")
+              encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$name")
               url="https://raw.githubusercontent.com/${{ github.repository }}/videos/videos/$encoded"
               echo "- [$name]($url)" >> README.md
             fi
           done
-
       # -------------------------------
       # Commit & push
       # -------------------------------
